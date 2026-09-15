@@ -17,24 +17,356 @@
                 gap: 20px;
                 }
 
-            .page-title{
-                color: antiquewhite;
-                mix-blend-mode: difference;
-            }
-
             .welcome{
                 transform: translate(-2.55vh, -15vh);
+                border: 0.05rem solid darkslategray;
+                padding: 1rem;
+                width: fit-content;
+                border-radius: 12px;
+                position:absolute;
+                }
 
-            }
+            canvas-container {
+                position: fixed;
+                inset: 0;
+                z-index: 0;
+                pointer-events: none;
+                }
+            
+            canvas { display: block; }
+
         </style>
     </head>
     <body>
+        <div id="canvas-container"></div>
+        <div id="cursor-glow"></div>
         <main class="welcome">
-            <h2 class="page-title">Welcome to Stardust!</h2>
+            <h2 style="color: antiquewhite; mix-blend-mode: difference;">Welcome to Stardust!</h2>
             <p style="color: antiquewhite; mix-blend-mode: difference;">
                 <dfn title="Dust formed in very hot gasses ejected from stellar atmospheres or in supernova explosions.">Stardust</dfn> is an ubiquitous term, but it is also a very obscure reference to one of my favourite franchises, which is pretty well known. Bonus points if you figure out what it is.
             </p>
             <a href="https://orv.pages.dev/" style="color: antiquewhite; mix-blend-mode: difference;"><dfn title="Omniscient Reader's Viewpoint">My Favourite Book!</dfn></a>
         </main>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+        <script>
+            (function () {
+            "use strict";
+            
+            // =======================================================================
+            // CONFIG — every tunable value for the scene lives here.
+            // Edit these directly; there are no sliders in the production build.
+            // =======================================================================
+            const CONFIG = {
+                // Overall particle budget. Lower this first if you need more headroom
+                // on low-end devices.
+                particleCount: 20000,
+            
+                // Fraction of particleCount that forms the moon (the rest are stars).
+                moonFraction: 0.1,
+            
+                // Moon geometry.
+                moonRadius: 45,          // base radius of the moon sphere
+                moonBreatheSpeed: 0.3,   // radians/sec — how fast the moon pulses
+                moonBreatheAmount: 0.05, // 0 = no pulsing, 0.5 = pulses to +/-50% of radius
+            
+                // Moon color — HSL. Hue 0.58-0.6 is blue; low saturation + high
+                // lightness keeps it reading as white with just a cool tint.
+                moonHue: 0.58,
+                moonSaturation: 0.18,
+                moonLightness: 0.94,
+            
+                // Star field geometry.
+                fieldRadius: 250,        // radius of the sphere the stars are spread over
+            
+                // Star animation.
+                twinkleSpeed: 1.5,        // how fast individual stars flicker
+                constellationCount: 24,   // number of "breathing" star clusters
+                breatheSpeed: 0.5,        // radians/sec — how fast clusters brighten/dim
+            
+                // Camera (static — no drag/zoom in the production build).
+                cameraPosition: { x: 0, y: 40, z: 220 },
+                cameraLookAt: { x: 0, y: 0, z: 0 },
+            
+                // Background clear color behind the particles.
+                backgroundColor: 0x05070d,
+            
+                // Point sprite size (world units, scaled by distance).
+                particleSize: 2.5,
+            
+                // Cursor space-warp effect (post-processing swirl around the pointer).
+                warpRadius: 0.06,      // effect radius, in normalized (aspect-corrected) screen units
+                warpStrength: 1.6,     // max swirl angle in radians at the cursor's center
+                warpPulseSpeed: 0.4,   // how fast the swirl strength gently pulses over time
+                warpFadeRate: 0.05,    // how quickly the effect fades in/out (0-1, higher = snappier)
+            };
+            
+            // ---------------------------------------------------------------------
+            // Scene setup
+            // ---------------------------------------------------------------------
+            const container = document.getElementById("canvas-container");
+            
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(
+                60,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                2000
+            );
+            camera.position.set(
+                CONFIG.cameraPosition.x,
+                CONFIG.cameraPosition.y,
+                CONFIG.cameraPosition.z
+            );
+            camera.lookAt(
+                CONFIG.cameraLookAt.x,
+                CONFIG.cameraLookAt.y,
+                CONFIG.cameraLookAt.z
+            );
+            
+            const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(CONFIG.backgroundColor, 1);
+            container.appendChild(renderer.domElement);
+            
+            // ---------------------------------------------------------------------
+            // Particle geometry
+            // ---------------------------------------------------------------------
+            const positions = new Float32Array(CONFIG.particleCount * 3);
+            const colors = new Float32Array(CONFIG.particleCount * 3);
+            
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+            
+            // Soft circular sprite generated on a canvas (no external texture file).
+            function makeSpriteTexture() {
+                const size = 64;
+                const canvas = document.createElement("canvas");
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext("2d");
+                const gradient = ctx.createRadialGradient(
+                size / 2, size / 2, 0,
+                size / 2, size / 2, size / 2
+                );
+                gradient.addColorStop(0, "rgba(255,255,255,1)");
+                gradient.addColorStop(0.4, "rgba(255,255,255,0.6)");
+                gradient.addColorStop(1, "rgba(255,255,255,0)");
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                return new THREE.CanvasTexture(canvas);
+            }
+            
+            const spriteTexture = makeSpriteTexture();
+            
+            const material = new THREE.PointsMaterial({
+                size: CONFIG.particleSize,
+                map: spriteTexture,
+                vertexColors: true,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending,
+                sizeAttenuation: true,
+            });
+            
+            const points = new THREE.Points(geometry, material);
+            scene.add(points);
+            
+            // ---------------------------------------------------------------------
+            // Post-processing: render the scene to a texture, then draw a
+            // full-screen quad that samples it with a swirl distortion centered
+            // on the cursor. No external post-processing library needed — this is
+            // a hand-rolled two-pass render using plain THREE.js primitives.
+            // ---------------------------------------------------------------------
+            let renderTarget = new THREE.WebGLRenderTarget(
+                window.innerWidth * renderer.getPixelRatio(),
+                window.innerHeight * renderer.getPixelRatio()
+            );
+            
+            const warpUniforms = {
+                tDiffuse: { value: renderTarget.texture },
+                uCursor: { value: new THREE.Vector2(0.5, 0.5) },
+                uAspect: { value: window.innerWidth / window.innerHeight },
+                uRadius: { value: CONFIG.warpRadius },
+                uStrength: { value: 0.0 }, // ramps up/down via warpIntensity each frame
+                uTime: { value: 0.0 },
+            };
+            
+            const warpMaterial = new THREE.ShaderMaterial({
+                uniforms: warpUniforms,
+                vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = vec4(position.xy, 0.0, 1.0);
+                }
+                `,
+                fragmentShader: `
+                precision highp float;
+                uniform sampler2D tDiffuse;
+                uniform vec2 uCursor;
+                uniform float uAspect;
+                uniform float uRadius;
+                uniform float uStrength;
+                uniform float uTime;
+                varying vec2 vUv;
+            
+                void main() {
+                    vec2 uv = vUv;
+                    vec2 diff = uv - uCursor;
+                    diff.x *= uAspect;
+            
+                    float dist = length(diff);
+                    float effect = smoothstep(uRadius, 0.0, dist);
+            
+                    float pulse = 0.7 + 0.3 * sin(uTime);
+                    float angle = effect * uStrength * pulse;
+            
+                    float s = sin(angle);
+                    float c = cos(angle);
+                    vec2 rotated = vec2(diff.x * c - diff.y * s, diff.x * s + diff.y * c);
+                    rotated.x /= uAspect;
+            
+                    vec2 warpedUV = clamp(uCursor + rotated, 0.0, 1.0);
+                    gl_FragColor = texture2D(tDiffuse, warpedUV);
+                }
+                `,
+                depthTest: false,
+                depthWrite: false,
+            });
+            
+            const postScene = new THREE.Scene();
+            const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), warpMaterial);
+            postScene.add(postQuad);
+            
+            window.addEventListener("resize", () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            
+                renderTarget.dispose();
+                renderTarget = new THREE.WebGLRenderTarget(
+                window.innerWidth * renderer.getPixelRatio(),
+                window.innerHeight * renderer.getPixelRatio()
+                );
+                warpUniforms.tDiffuse.value = renderTarget.texture;
+                warpUniforms.uAspect.value = window.innerWidth / window.innerHeight;
+            });
+            
+            let cursorTargetX = 0.5;
+            let cursorTargetY = 0.5;
+            let warpIntensityTarget = 0.0;
+            let warpIntensity = 0.0;
+            
+            window.addEventListener("pointermove", (e) => {
+                cursorTargetX = e.clientX / window.innerWidth;
+                cursorTargetY = 1.0 - e.clientY / window.innerHeight; // flip to match UV's bottom-up Y
+                warpIntensityTarget = 1.0;
+            });
+            window.addEventListener("pointerleave", () => {
+                warpIntensityTarget = 0.0;
+            });
+            
+            // ---------------------------------------------------------------------
+            // Per-particle update function
+            // ---------------------------------------------------------------------
+            const scratchTarget = new THREE.Vector3();
+            const scratchColor = new THREE.Color();
+            
+            const goldenAngle = 2.399963229728653;
+            
+            function updateParticle(i, count, target, color, time) {
+                const moonCount = Math.max(1, Math.floor(count * CONFIG.moonFraction));
+            
+                if (i < moonCount) {
+                const breathe = 1 + CONFIG.moonBreatheAmount * Math.sin(time * CONFIG.moonBreatheSpeed);
+                const r = CONFIG.moonRadius * breathe;
+                const phiSafe = Math.max(1, moonCount - 1);
+                const phi = Math.acos(-1 + (2 * i) / phiSafe);
+                const theta = Math.sqrt(moonCount * Math.PI) * phi;
+                const sinPhi = Math.sin(phi);
+                target.set(
+                    r * Math.cos(theta) * sinPhi,
+                    r * Math.sin(theta) * sinPhi,
+                    r * Math.cos(phi)
+                );
+                color.setHSL(CONFIG.moonHue, CONFIG.moonSaturation, CONFIG.moonLightness);
+                } else {
+                const si = i - moonCount;
+                const starCountSafe = Math.max(1, count - moonCount);
+                const cosPhi = Math.min(1, Math.max(-1, 1 - (2 * (si + 0.5)) / starCountSafe));
+                const phi = Math.acos(cosPhi);
+                const theta = goldenAngle * si;
+                const sinPhi = Math.sin(phi);
+                const sx = CONFIG.fieldRadius * sinPhi * Math.cos(theta);
+                const sy = CONFIG.fieldRadius * sinPhi * Math.sin(theta);
+                const sz = CONFIG.fieldRadius * Math.cos(phi);
+                target.set(sx, sy, sz);
+            
+                const clusterStep = (2 * Math.PI) / CONFIG.constellationCount;
+                const clusterId = si % CONFIG.constellationCount;
+                const clusterPhase = clusterId * clusterStep;
+                const breathe = 0.5 + 0.5 * Math.sin(time * CONFIG.breatheSpeed + clusterPhase);
+                const twinkleSeed = Math.sin(si * 12.9898) * 43758.5453;
+                const twinklePhase = (twinkleSeed - Math.floor(twinkleSeed)) * 6.2831853;
+                const twinkle = 0.4 + 0.6 * Math.sin(time * CONFIG.twinkleSpeed + twinklePhase);
+                const brightness = Math.min(1, Math.max(0.05, 0.15 + 0.75 * breathe * twinkle));
+            
+                const hue = 0.58 + 0.06 * Math.sin(si * 0.037);
+                const sat = 0.15 + 0.1 * breathe;
+                color.setHSL(hue, sat, brightness * 0.85);
+                }
+            }
+            
+            // ---------------------------------------------------------------------
+            // Animation loop
+            // ---------------------------------------------------------------------
+            const clock = new THREE.Clock();
+            const posAttr = geometry.getAttribute("position");
+            const colAttr = geometry.getAttribute("color");
+            
+            function animate() {
+                requestAnimationFrame(animate);
+            
+                const time = clock.getElapsedTime();
+            
+                for (let i = 0; i < CONFIG.particleCount; i++) {
+                updateParticle(i, CONFIG.particleCount, scratchTarget, scratchColor, time);
+            
+                const p3 = i * 3;
+                posAttr.array[p3] = scratchTarget.x;
+                posAttr.array[p3 + 1] = scratchTarget.y;
+                posAttr.array[p3 + 2] = scratchTarget.z;
+            
+                colAttr.array[p3] = scratchColor.r;
+                colAttr.array[p3 + 1] = scratchColor.g;
+                colAttr.array[p3 + 2] = scratchColor.b;
+                }
+            
+                posAttr.needsUpdate = true;
+                colAttr.needsUpdate = true;
+            
+                // Ease the warp toward its target intensity and cursor position so
+                // it doesn't snap in/out or jump around.
+                warpIntensity += (warpIntensityTarget - warpIntensity) * CONFIG.warpFadeRate;
+                warpUniforms.uCursor.value.x += (cursorTargetX - warpUniforms.uCursor.value.x) * 0.15;
+                warpUniforms.uCursor.value.y += (cursorTargetY - warpUniforms.uCursor.value.y) * 0.15;
+                warpUniforms.uStrength.value = CONFIG.warpStrength * warpIntensity;
+                warpUniforms.uTime.value = time * CONFIG.warpPulseSpeed;
+            
+                // Pass 1: render the particle scene into an off-screen texture.
+                renderer.setRenderTarget(renderTarget);
+                renderer.render(scene, camera);
+            
+                // Pass 2: draw the full-screen warp shader, sampling that texture.
+                renderer.setRenderTarget(null);
+                renderer.render(postScene, postCamera);
+            }
+            
+            animate();
+            })();
+        </script>
     </body>
 </html>
